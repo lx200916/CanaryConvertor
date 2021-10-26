@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 import "archive/zip"
@@ -65,6 +67,7 @@ type DictionaryTree struct {
 	URL      string
 	Duration string
 	Time     string
+	Protocol string
 }
 
 type PostmanRaw struct {
@@ -147,6 +150,7 @@ func toPostman(inputFile string, output string) error {
 				directoryDict[path[0]].URL = httpCanaryJson.URL
 				directoryDict[path[0]].Duration = httpCanaryJson.Duration
 				directoryDict[path[0]].Time = httpCanaryJson.Time
+				directoryDict[path[0]].Protocol = httpCanaryJson.Protocol
 
 			}
 		}
@@ -163,8 +167,24 @@ func toPostman(inputFile string, output string) error {
 				fmt.Println(err)
 				return err
 			}
+			var buf *bufio.Reader
+			if i2.Protocol == "h2" {
+				reg, _ := regexp.Compile(`h2\s*$`)
+				content, err := ioutil.ReadAll(open)
 
-			request, err = http.ReadRequest(bufio.NewReader(open))
+				if err != nil {
+					fmt.Println(err)
+					return err
+				}
+				lines := strings.Split(string(content), "\n")
+				lines[0] = reg.ReplaceAllString(lines[0], "HTTP/1.1")
+				buf = bufio.NewReader(bytes.NewBufferString(strings.Join(lines, "\n")))
+
+			} else {
+				buf = bufio.NewReader(open)
+			}
+
+			request, err = http.ReadRequest(buf)
 			if err != nil {
 				fmt.Println(err)
 				return err
@@ -291,8 +311,22 @@ func toPostman(inputFile string, output string) error {
 				fmt.Println(err)
 				return err
 			}
+			var buf *bufio.Reader
+			if i2.Protocol == "h2" {
+				content, err := ioutil.ReadAll(open)
 
-			response, err := http.ReadResponse(bufio.NewReader(open), request)
+				if err != nil {
+					fmt.Println(err)
+					return err
+				}
+				lines := strings.Split(string(content), "\n")
+				lines[0] = strings.Replace(lines[0], "h2", "HTTP/1.1", 1)
+				buf = bufio.NewReader(bytes.NewBufferString(strings.Join(lines, "\n")))
+
+			} else {
+				buf = bufio.NewReader(open)
+			}
+			response, err := http.ReadResponse(buf, request)
 
 			if err != nil {
 				fmt.Println(err)
@@ -315,11 +349,15 @@ func toPostman(inputFile string, output string) error {
 				}
 				responsePostman.Header = &headers
 			}
+			if response.ContentLength == 0 {
+				continue
+			}
 			reader := response.Body
 			if response.Header.Get("Content-Encoding") == "gzip" {
 				reader, err = gzip.NewReader(reader)
 				if err != nil {
 					fmt.Println(err)
+
 				}
 			}
 			var content []byte
